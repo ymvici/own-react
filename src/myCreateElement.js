@@ -1,4 +1,4 @@
-// 1.需要根据传入的参数生成新的jsx对象
+// 根据传入的参数生成新的jsx对象
 export const myCreateElement = (type, attribute, ...childrens) => {
   console.log("~ childrens", childrens);
   return {
