@@ -45,19 +45,36 @@ function createDom(fiber) {
 
 // fiber的开始
 export function render(element, container) {
-  // render 函数中我们把 nextUnitOfWork 置为 fiber 树的根节点。
-  nextUnitOfWork = {
+  wipRoot = {
     dom: container,
     props: {
       children: [element],
     },
   };
+  // render 函数中我们把 nextUnitOfWork 置为 fiber 树的根节点。
+  nextUnitOfWork = wipRoot;
 }
 // 下一次需要渲染的任务节点
 let nextUnitOfWork = null;
-/**
- * 我们需要先设置渲染的第一个任务单元，然后开始循环。
- */
+// 记录修改dom内容的树
+let wipRoot = null;
+
+function commitRoot() {
+  commitWork(wipRoot.child);
+  wipRoot = null;
+}
+
+function commitWork(fiber) {
+  if (!fiber) {
+    return;
+  }
+  const domParent = fiber.parent.dom;
+  domParent.appendChild(fiber.dom);
+  commitWork(fiber.child);
+  commitWork(fiber.sibling);
+}
+
+// 我们需要先设置渲染的第一个任务单元，然后开始循环。
 function workLoop(deadline) {
   /**
    * 以下任意条件成立时，shouldYield会返回true
@@ -68,6 +85,10 @@ function workLoop(deadline) {
   while (nextUnitOfWork && !shouldYield) {
     nextUnitOfWork = performUnitOfWork(nextUnitOfWork);
     shouldYield = deadline.timeRemaining() < 1;
+  }
+  // 当wiproot收集所有dom修改后，触发commit
+  if (!nextUnitOfWork && wipRoot) {
+    commitRoot();
   }
   requestIdleCallback(workLoop);
 }
@@ -83,10 +104,11 @@ function performUnitOfWork(fiber) {
   if (!fiber.dom) {
     fiber.dom = createDom(fiber);
   }
-  // 根节点没有父节点
-  if (fiber.parent) {
-    fiber.parent.dom.appendChild(fiber.dom);
-  }
+  // 根节点没有父节点，将此时的fiber dom挂载到父节点上
+  // 为防止在整颗树还没加载完成时，被浏览器中断，这里要把修改dom的记录保存到wipRoot上
+  // if (fiber.parent) { 只有wipRoot上任务收集完成后才把整颗树挂载到实际dom上
+  //   fiber.parent.dom.appendChild(fiber.dom);
+  // }
   const elements = fiber.props.children;
   let index = 0;
   let prevSibling = null;
