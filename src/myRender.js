@@ -28,12 +28,42 @@ export const myRenderOld = (element, container) => {
   // 将生成的节点添加到容器中
   container.appendChild(dom);
 };
+// 生成对应的jsx dom对象
+function createDom(fiber) {
+  const dom =
+    fiber.type === "TEXT_ELEMENT"
+      ? document.createTextNode("")
+      : document.createElement(fiber.type);
+  const isProperty = (key) => key !== "children";
+  Object.keys(fiber.props)
+    .filter(isProperty)
+    .forEach((name) => {
+      dom[name] = fiber.props[name];
+    });
+  return dom;
+}
 
+// fiber的开始
+export function render(element, container) {
+  // render 函数中我们把 nextUnitOfWork 置为 fiber 树的根节点。
+  nextUnitOfWork = {
+    dom: container,
+    props: {
+      children: [element],
+    },
+  };
+}
+// 下一次需要渲染的任务节点
 let nextUnitOfWork = null;
 /**
  * 我们需要先设置渲染的第一个任务单元，然后开始循环。
  */
 function workLoop(deadline) {
+  /**
+   * 以下任意条件成立时，shouldYield会返回true
+   * 时间片到期（默认5ms）
+   * 更紧急任务插队
+   */
   let shouldYield = false;
   while (nextUnitOfWork && !shouldYield) {
     nextUnitOfWork = performUnitOfWork(nextUnitOfWork);
@@ -41,9 +71,58 @@ function workLoop(deadline) {
   }
   requestIdleCallback(workLoop);
 }
-
+// 我们使用 requestIdleCallback 作为一个循环。
+// 你可以把 requestIdleCallback 类比成 setTimeout，
+// 只不过这次是浏览器来决定什么时候运行回调函数，而不是 settimeout 里通过我们指定的一个时间。
+// requestIdleCallback 还给了一个 deadline 参数。通过它来判断离浏览器再次拿回控制权还有多少时间。
 requestIdleCallback(workLoop);
+
 // performUnitOfWork 函数不仅需要执行每一小块的任务单元，还需要返回下一个任务单元。
-function performUnitOfWork(nextUnitOfWork) {
-  // TODO
+function performUnitOfWork(fiber) {
+  // 根节点才会有dom，如果不是根节点就要创建dom，因为render将第一个任务设置为根节点并设置了dom属性
+  if (!fiber.dom) {
+    fiber.dom = createDom(fiber);
+  }
+  // 根节点没有父节点
+  if (fiber.parent) {
+    fiber.parent.dom.appendChild(fiber.dom);
+  }
+  const elements = fiber.props.children;
+  let index = 0;
+  let prevSibling = null;
+  // 然后为每个子节点创建对应的新的 fiber 节点。
+  // 循环创建新的fiber任务单元，并设置其父节点和兄弟节点指向
+  while (index < elements.length) {
+    const element = elements[index];
+    const newFiber = {
+      type: element.type,
+      props: element.props,
+      parent: fiber,
+      dom: null,
+    };
+    if (index === 0) {
+      fiber.child = newFiber;
+    } else {
+      prevSibling.sibling = newFiber;
+    }
+
+    prevSibling = newFiber;
+    index++;
+  }
+  // 这个函数的返回值是下一个任务，这其实是一个深度优先遍历
+  // 先找子元素，没有子元素了就找兄弟元素
+  // 兄弟元素也没有了就返回父元素
+  // 然后再找这个父元素的兄弟元素
+  // 最后到根节点结束
+  // 这个遍历的顺序其实就是从上到下，从左到右
+  if (fiber.child) {
+    return fiber.child;
+  }
+  let nextFiber = fiber;
+  while (nextFiber) {
+    if (nextFiber.sibling) {
+      return nextFiber.sibling;
+    }
+    nextFiber = nextFiber.parent;
+  }
 }
