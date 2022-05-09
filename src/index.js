@@ -1,6 +1,6 @@
 /** @jsxRuntime classic */
 import { myCreateElement } from "./myCreateElement";
-import { myRender } from "./myRender";
+import { myRenderOld } from "./myRender";
 
 /** @jsx myCreateElement */
 const element = (
@@ -9,4 +9,4 @@ const element = (
     <h2 style="text-align:right">from myCreateElement</h2>
   </div>
 );
-myRender(element, document.getElementById("root"));
+myRenderOld(element, document.getElementById("root"));
