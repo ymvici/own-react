@@ -50,7 +50,10 @@ export function render(element, container) {
     props: {
       children: [element],
     },
+    // 在每一个 fiber 节点上添加 alternate 属性用于记录旧 fiber 节点（上一个 commit 阶段使用的 fiber 节点）的引用。
+    alternate: currentRoot,
   };
+  deletions = [];
   // render 函数中我们把 nextUnitOfWork 置为 fiber 树的根节点。
   nextUnitOfWork = wipRoot;
 }
@@ -58,10 +61,56 @@ export function render(element, container) {
 let nextUnitOfWork = null;
 // 记录修改dom内容的树
 let wipRoot = null;
+// 上次提交到 DOM 节点的 fiber 树
+let currentRoot = null;
+// 保存要移除的 dom 节点
+let deletions = null;
 
 function commitRoot() {
+  // 提交变更到DOM上的时候，需要把这个数组中的fiber的变更（其实是移除 DOM）给提交上去。
+  deletions.forEach(commitWork);
   commitWork(wipRoot.child);
+  currentRoot = wipRoot;
   wipRoot = null;
+}
+
+const isEvent = (key) => key.startsWith("on");
+const isProperty = (key) => key !== "children" && !isEvent(key);
+const isNew = (prev, next) => (key) => prev[key] !== next[key];
+const isGone = (prev, next) => (key) => !(key in next);
+// 当需要更新节点属性，不改变dom时调用
+function updateDom(dom, prevProps, nextProps) {
+  //Remove old or changed event listeners
+  Object.keys(prevProps)
+    .filter(isEvent)
+    .filter((key) => !(key in nextProps) || isNew(prevProps, nextProps)(key))
+    .forEach((name) => {
+      const eventType = name.toLowerCase().substring(2);
+      dom.removeEventListener(eventType, prevProps[name]);
+    });
+  // Remove old properties
+  Object.keys(prevProps)
+    .filter(isProperty)
+    .filter(isGone(prevProps, nextProps))
+    .forEach((name) => {
+      dom[name] = "";
+    });
+
+  // Set new or changed properties
+  Object.keys(nextProps)
+    .filter(isProperty)
+    .filter(isNew(prevProps, nextProps))
+    .forEach((name) => {
+      dom[name] = nextProps[name];
+    });
+  // Add event listeners
+  Object.keys(nextProps)
+    .filter(isEvent)
+    .filter(isNew(prevProps, nextProps))
+    .forEach((name) => {
+      const eventType = name.toLowerCase().substring(2);
+      dom.addEventListener(eventType, nextProps[name]);
+    });
 }
 
 function commitWork(fiber) {
@@ -69,7 +118,13 @@ function commitWork(fiber) {
     return;
   }
   const domParent = fiber.parent.dom;
-  domParent.appendChild(fiber.dom);
+  if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
+    domParent.appendChild(fiber.dom);
+  } else if (fiber.effectTag === "DELETION") {
+    domParent.removeChild(fiber.dom);
+  } else if (fiber.effectTag === "UPDATE" && fiber.dom != null) {
+    updateDom(fiber.dom, fiber.alternate.props, fiber.props);
+  }
   commitWork(fiber.child);
   commitWork(fiber.sibling);
 }
@@ -110,33 +165,7 @@ function performUnitOfWork(fiber) {
   //   fiber.parent.dom.appendChild(fiber.dom);
   // }
   const elements = fiber.props.children;
-  let index = 0;
-  let prevSibling = null;
-  // 然后为每个子节点创建对应的新的 fiber 节点。
-  // 循环创建新的fiber任务单元，并设置其父节点和兄弟节点指向
-  while (index < elements.length) {
-    const element = elements[index];
-    const newFiber = {
-      type: element.type,
-      props: element.props,
-      parent: fiber,
-      dom: null,
-    };
-    if (index === 0) {
-      fiber.child = newFiber;
-    } else {
-      prevSibling.sibling = newFiber;
-    }
-
-    prevSibling = newFiber;
-    index++;
-  }
-  // 这个函数的返回值是下一个任务，这其实是一个深度优先遍历
-  // 先找子元素，没有子元素了就找兄弟元素
-  // 兄弟元素也没有了就返回父元素
-  // 然后再找这个父元素的兄弟元素
-  // 最后到根节点结束
-  // 这个遍历的顺序其实就是从上到下，从左到右
+  reconcileChildren(fiber, elements);
   if (fiber.child) {
     return fiber.child;
   }
@@ -146,5 +175,62 @@ function performUnitOfWork(fiber) {
       return nextFiber.sibling;
     }
     nextFiber = nextFiber.parent;
+  }
+}
+
+// 这个函数会调和（reconcile）旧的 fiber 节点 和新的 react elements
+function reconcileChildren(wipFiber, elements) {
+  let index = 0;
+  let oldFiber = wipFiber.alternate && wipFiber.alternate.child;
+  let prevSibling = null;
+  // 然后为每个子节点创建对应的新的 fiber 节点。
+  // 循环创建新的fiber任务单元，并设置其父节点和兄弟节点指向
+  while (index < elements.length || oldFiber != null) {
+    const element = elements[index];
+    let newFiber = null;
+    const sameType = oldFiber && element && element.type === oldFiber.type;
+    /**
+     * 以下是比较的步骤：
+     * React使用 key 这个属性来优化 reconciliation 过程。
+     * 比如, key 属性可以用来检测 elements 数组中的子组件是否仅仅是更换了位置。
+     */
+    // 1. 对于新旧节点类型是相同的情况，我们可以复用旧的 DOM，仅修改上面的属性
+    if (sameType) {
+      newFiber = {
+        type: oldFiber.type,
+        props: element.props, // 类型和dom使用旧节点，props使用新节点属性
+        dom: oldFiber.dom,
+        parent: wipFiber,
+        alternate: oldFiber,
+        effectTag: "UPDATE", // 添加effectTag，在commit阶段使用
+      };
+    }
+    // 2.如果类型不同，意味着我们需要创建一个新的 DOM 节点
+    if (element && !sameType) {
+      newFiber = {
+        type: element.type,
+        props: element.props,
+        dom: null,
+        parent: wipFiber,
+        alternate: null,
+        effectTag: "PLACEMENT", // 标记其为 PLACEMENT
+      };
+    }
+    // 3.如果类型不同，并且旧节点存在的话，需要把旧节点的 DOM 给移除
+    if (oldFiber && !sameType) {
+      oldFiber.effectTag = "DELETION";
+      deletions.push(oldFiber);
+    }
+    if (oldFiber) {
+      oldFiber = oldFiber.sibling;
+    }
+
+    if (index === 0) {
+      wipFiber.child = newFiber;
+      prevSibling.sibling = newFiber;
+    }
+
+    prevSibling = newFiber;
+    index++;
   }
 }
